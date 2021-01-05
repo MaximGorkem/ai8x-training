@@ -4,6 +4,7 @@ import copy
 
 import torch
 from torch import nn
+from torch import optim
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import StepLR
 import torch.nn.functional as F
@@ -34,8 +35,8 @@ def fuse_bn(conv, bn):
                          conv.stride,
                          conv.padding,
                          bias=True)
-    fused_conv.weight = nn.Parameter(w)
-    fused_conv.bias = nn.Parameter(b)
+    fused_conv.weight = nn.Parameter(w/4.)
+    fused_conv.bias = nn.Parameter(b/4.)
     return fused_conv
 
 
@@ -64,7 +65,7 @@ def cross_entropy_loss_with_soft_target(pred, soft_target):
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
 
-model = torch.load('mofa_models/noclamp_mofa_acc59%.pth.tar', map_location=device)
+model = torch.load('mofa_models/clamp_mofa_acc67%.pth.tar', map_location=device)
 mofa_base = fuse_bn_mofa(model)
 mofa_base.to(device)
 mofa_base_arch = mofa_net.MOFA_Net_Arch(mofa_base.get_arch())
@@ -87,7 +88,14 @@ valset = DataLoader(dataset=test_dataset, batch_size=1000, shuffle=False, num_wo
 criterion = torch.nn.CrossEntropyLoss()
 
 best_val_accuracy = 0
-max_epochs = 2000
+max_epochs = 5000
+
+
+max_optim_steps = 10
+optim_step = 0
+optimizer = torch.optim.SGD(mofa_base.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-5)
+#scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.5)
+#scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, max_optim_steps, eta_min=1e-4)
 
 for epoch in range(max_epochs):
     t0 = time.time()
@@ -98,8 +106,6 @@ for epoch in range(max_epochs):
         subnet_kernel_arch = mofa_base_arch.sample_kernel()
         mofa_base.update_arch(subnet_kernel_arch.get_param_dict())
 
-        optimizer = torch.optim.SGD(mofa_base.parameters(), lr=1e-2, momentum=0.9, weight_decay=1e-5)
-      
         y_pred = mofa_base(batch)
         
         if kd_ratio > 0:
@@ -109,17 +115,24 @@ for epoch in range(max_epochs):
                 soft_label = F.softmax(soft_logits, dim=1)
             kd_loss = cross_entropy_loss_with_soft_target(y_pred, soft_label)
             loss = kd_ratio * kd_loss + criterion(y_pred, labels)
+            mofa_base.update_arch(subnet_kernel_arch.get_param_dict())
         else:
             loss = criterion(y_pred, labels)     
         
-        mofa_base.update_arch(subnet_kernel_arch.get_param_dict())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         mofa_base.reset_arch()
+
+    #scheduler.step()
+    # optim_step += 1
+    # if optim_step == max_optim_steps:
+    #     optim_step == 0
+    #     max_optim_steps *= 2
+    #     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, max_optim_steps)
         
     print(f'Epoch {epoch+1}')
-    print(f'\tTraining loss:{loss.item()}')
+    print(f'\tTraining loss:{loss.item()}')#\tLearning Rate:{scheduler.get_last_lr()}')
     t1 = time.time()
     print(f'\tTraining time:{t1-t0:.2f} s - {(t1-t0)/60:.2f} mins ')
     
@@ -142,5 +155,7 @@ for epoch in range(max_epochs):
         torch.save(mofa_base, f'mofa_models/mofa_ks_acc{100*val_accuracy:.0f}%.pth.tar')
         best_val_accuracy = val_accuracy
     print('\tAccuracy of the mofa on the test images: %d %%' % (100 * correct / total))
-    print(f'\tFirst ktm: {mofa_base.units[0].layers[0].ktm[4].item()}')
-    print(f'\tLast ktm: {mofa_base.units[4].layers[2].ktm[4].item()}')
+    # print(f'\tFirst ktm: {mofa_base.units[0].layers[0].ktm[4].item()}')
+    # print(f'\tLast ktm: {mofa_base.units[4].layers[2].ktm[4].item()}')
+
+torch.save(mofa_base, f'mofa_models/mofa_ks_acc{100*val_accuracy:.0f}_epoch{epoch}%.pth.tar')

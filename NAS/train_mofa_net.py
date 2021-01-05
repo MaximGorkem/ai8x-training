@@ -17,10 +17,10 @@ base_arch_params = {}
 base_arch_params['in_ch'] = 3
 base_arch_params['out_class'] = 100
 base_arch_params['n_units'] = 5
-base_arch_params['depth_list'] = [3, 3, 3, 3, 3]
-base_arch_params['width_list'] = [[48, 48, 48], [64, 64, 64], [64, 64, 64], [128, 128, 128], [128, 128, 128]]
-base_arch_params['kernel_list'] = [[3]*3 for _ in range(5)]
-base_arch_params['bias_list'] = [[True]*3 for _ in range(5)]
+base_arch_params['depth_list'] = [4, 3, 3, 3, 2]
+base_arch_params['width_list'] = [[64, 64, 64, 64], [64, 64, 128], [128, 128, 128], [128, 128, 128], [128, 128]]
+base_arch_params['kernel_list'] = [[3, 3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3, 3], [3, 3]]
+base_arch_params['bias_list'] = [[True, True, True, True], [True, True, True], [True, True, True], [True, True, True], [True, True]]
 base_arch_params['bn'] = True
 mofa_base_arch = mofa_net.MOFA_Net_Arch(base_arch_params)
 
@@ -50,11 +50,11 @@ mofa = mofa_net.MOFAnet(mofa_base_arch.get_param_dict(), verbose=False)
 mofa = mofa.to(device)
 
 criterion = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(mofa.parameters(), lr=1e-4)
-scheduler = StepLR(optimizer, step_size=25, gamma=0.5)
+optimizer = torch.optim.Adam(mofa.parameters(), lr=1e-3)
+scheduler = StepLR(optimizer, step_size=50, gamma=0.5)
 
 best_val_accuracy = 0
-max_epochs = 150
+max_epochs = 200
 for epoch in range(max_epochs):
     t0 = time.time()
     mofa.train()
@@ -88,8 +88,7 @@ for epoch in range(max_epochs):
     val_accuracy = correct / total
     if val_accuracy > best_val_accuracy:
         if epoch != 0:
-            os.remove(f'mofa_models/noclamp_mofa_acc{100*best_val_accuracy:.0f}%.pth.tar')
-        torch.save(mofa, f'mofa_models/noclamp_mofa_acc{100*val_accuracy:.0f}%.pth.tar')
+            os.remove(f'mofa_models/clamp_mofa_acc{100*best_val_accuracy:.0f}%.pth.tar')
+        torch.save(mofa, f'mofa_models/clamp_mofa_acc{100*val_accuracy:.0f}%.pth.tar')
         best_val_accuracy = val_accuracy
-    print('\tAccuracy of the mofa on the test images: %d %%' % (
-        100 * correct / total))
+    print('\tAccuracy of the mofa on the test images: %d %%' % (100 * correct / total))

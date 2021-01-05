@@ -64,8 +64,9 @@ class FusedConv2dReLU(nn.Module):
         x = self.func(x, weight, bias, self.conv2d.stride, self.pad)
         if self.bn:
             x = self.batchnorm(x)
+            x /= 4.
         x = self.activation(x)
-#         x = self.clamp(x)
+        x = self.clamp(x)
         return x
 
 
@@ -141,14 +142,18 @@ class MOFA_Net_Arch():
 
         return MOFA_Net_Arch(param_dict)
 
-    def sample_depth(self, sample_kernel=True):
+    def sample_depth(self, sample_kernel=True, level=-1):
         if sample_kernel:
             param_dict = self.sample_kernel().get_param_dict()
         else:
             param_dict = copy.deepcopy(self.get_param_dict())
         
         for u_ind in range(param_dict['n_units']):
-            min_depth = 1
+            if level < 0:
+                min_depth = 1
+            else:
+                min_depth = param_dict['depth_list'][u_ind] - level
+        
             max_depth = param_dict['depth_list'][u_ind]
             depth = random.randint(min_depth, max_depth)
             param_dict['depth_list'][u_ind] = depth
@@ -158,7 +163,7 @@ class MOFA_Net_Arch():
         
         return MOFA_Net_Arch(param_dict)
 
-    def sample_width(self, sample_kernel_depth=True):
+    def sample_width(self, sample_kernel_depth=True, level=-1):
         last_layer_width = self.width_list[-1][-1]
 
         if sample_kernel_depth:
@@ -172,7 +177,14 @@ class MOFA_Net_Arch():
                     width = last_layer_width
                 else:
                     max_width = param_dict['width_list'][u_ind][l_ind]
-                    possible_width_list = [int(.5*max_width), int(.75*max_width), max_width]
+                    possible_width_list = [max_width]
+                    if level > 0:
+                        for i in range(level):
+                            k = (1.0 - 0.25*(i+1))
+                            if k <= 0:
+                                break
+                            possible_width_list.append(k * max_width)
+                    #possible_width_list = [int(.5*max_width), int(.75*max_width), max_width]
                     width = random.choice(possible_width_list)
                 param_dict['width_list'][u_ind][l_ind] = width
     
@@ -283,7 +295,6 @@ class MOFAnet(nn.Module):
                                    self.bn,
                                    self.verbose))
             self.last_width = self.width_list[i][-1]
-        self.flatten = nn.Flatten()
         self.max_pool = nn.MaxPool2d(kernel_size=2)
 
         self.classifier = nn.Linear(512, self.out_class) 
@@ -324,6 +335,27 @@ class MOFAnet(nn.Module):
         return {'in_ch': self.in_ch, 'out_class': self.out_class, 'n_units': self.n_units,
                 'depth_list': self.depth_list, 'width_list': self.width_list, 
                 'kernel_list': self.kernel_list, 'bias_list': self.bias_list, 'bn': self.bn}
+    
+    def sort_channels(self):
+        for unit_idx, depth in enumerate(self.depth_list):
+            for layer_idx in range(depth):
+                if (unit_idx == (len(self.depth_list) - 1)) and (layer_idx == (depth-1)):
+                    continue
+
+                layer = self.units[unit_idx].layers[layer_idx]
+
+                importance = torch.sum(torch.abs(layer.conv2d.weight.data), dim=(1, 2, 3))
+                _, inds = torch.sort(importance, descending=True)
+                layer.conv2d.weight.data = layer.conv2d.weight.data[inds, :, :, :]
+                layer.conv2d.bias.data = layer.conv2d.bias.data[inds]
+                
+                next_layer_idx = layer_idx + 1
+                next_unit_idx = unit_idx
+                if next_layer_idx == depth:
+                    next_layer_idx = 0
+                    next_unit_idx = unit_idx + 1
+                
+                self.units[next_unit_idx].layers[next_layer_idx].conv2d.weight.data = self.units[next_unit_idx].layers[next_layer_idx].conv2d.weight.data[:, inds, :, :]
 
     def forward(self, x):
         for i, unit in enumerate(self.units[:-1]):
