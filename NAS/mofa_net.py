@@ -152,7 +152,7 @@ class MOFA_Net_Arch():
             if level < 0:
                 min_depth = 1
             else:
-                min_depth = param_dict['depth_list'][u_ind] - level
+                min_depth = max(param_dict['depth_list'][u_ind] - level, 1)
         
             max_depth = param_dict['depth_list'][u_ind]
             depth = random.randint(min_depth, max_depth)
@@ -167,13 +167,14 @@ class MOFA_Net_Arch():
         last_layer_width = self.width_list[-1][-1]
 
         if sample_kernel_depth:
-            param_dict = self.sample_depth(sample_kernel=True).get_param_dict()
+            param_dict = self.sample_depth(sample_kernel=True, level=2).get_param_dict()
         else:
             param_dict = copy.deepcopy(self.get_param_dict())
         
         for u_ind in range(param_dict['n_units']):
             for l_ind in range(param_dict['depth_list'][u_ind]):
                 if u_ind == (param_dict['n_units'] - 1) and l_ind == (param_dict['depth_list'][u_ind] - 1):
+                    #print(f'{u_ind}, {l_ind}, Last Layer Width: {last_layer_width}')
                     width = last_layer_width
                 else:
                     max_width = param_dict['width_list'][u_ind][l_ind]
@@ -183,7 +184,7 @@ class MOFA_Net_Arch():
                             k = (1.0 - 0.25*(i+1))
                             if k <= 0:
                                 break
-                            possible_width_list.append(k * max_width)
+                            possible_width_list.append(int(k * max_width))
                     #possible_width_list = [int(.5*max_width), int(.75*max_width), max_width]
                     width = random.choice(possible_width_list)
                 param_dict['width_list'][u_ind][l_ind] = width
@@ -363,5 +364,6 @@ class MOFAnet(nn.Module):
             x = self.max_pool(x)
         x = self.units[-1](x)
         x = x.view(x.size(0), -1)
+        #print(x.shape, self.depth_list)
         x = self.classifier(x)
         return x

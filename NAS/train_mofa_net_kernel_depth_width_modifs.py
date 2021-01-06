@@ -25,7 +25,7 @@ def cross_entropy_loss_with_soft_target(pred, soft_target):
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
 
-mofa_base = torch.load('mofa_models/mofa_ds_acc41%_epoch4999.pth.tar', map_location=device)
+mofa_base = torch.load('mofa_models/mofa_ds_lev2_acc59%.pth.tar', map_location=device)
 mofa_base_arch = mofa_net.MOFA_Net_Arch(mofa_base.get_arch())
 print(mofa_base_arch)
 
@@ -47,13 +47,14 @@ criterion = torch.nn.CrossEntropyLoss()
 
 level = 1
 best_val_accuracy = 0
-max_epochs = 20000
-init_epochs = 10000
+max_epochs = 4000
+init_epochs = 0
 
 optimizer = torch.optim.SGD(mofa_base.parameters(), lr=1e-3, momentum=0.9)
 # max_optim_steps = 50
 # optim_step = 0
 # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, max_optim_steps, eta_min=1e-5)
+scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10000, 15000], gamma=0.5)
 
 for epoch in range(init_epochs, init_epochs+max_epochs):
     t0 = time.time()
@@ -62,7 +63,7 @@ for epoch in range(init_epochs, init_epochs+max_epochs):
         batch, labels = batch.to(device), labels.to(device)
 
         mofa_base.sort_channels()
-        subnet_width_arch = mofa_base_arch.sample_width()
+        subnet_width_arch = mofa_base_arch.sample_width(level=level)
         mofa_base.update_arch(subnet_width_arch.get_param_dict())
 
         y_pred = mofa_base(batch)
@@ -83,7 +84,7 @@ for epoch in range(init_epochs, init_epochs+max_epochs):
         optimizer.step()
         mofa_base.reset_arch()
     
-    # scheduler.step()
+    scheduler.step()
     # optim_step += 1
     # if optim_step == max_optim_steps:
     #     optimizer = torch.optim.SGD(mofa_base.parameters(), lr=1e-4, momentum=0.9)
