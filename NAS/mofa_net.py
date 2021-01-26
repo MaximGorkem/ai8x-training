@@ -48,6 +48,11 @@ class FusedConv2dReLU(nn.Module):
             self.batchnorm = nn.BatchNorm2d(out_channels)
         self.activation = nn.ReLU()
         self.clamp = Clamp(min_val=-1, max_val=1)
+    
+    def set_batchnorm_on(self):
+        self.bn = True
+        if not hasattr(self, 'batchnorm'):
+            self.batchnorm = nn.BatchNorm2d(self.out_channels)
 
     def forward(self, x):
         #print(self.out_channels, self.in_channels, self.conv2d.weight.shape, self.conv2d.bias.shape)
@@ -63,7 +68,19 @@ class FusedConv2dReLU(nn.Module):
             print(f'Data Shape: {x.shape}\tWeight Shape: {weight.shape}')
         x = self.func(x, weight, bias, self.conv2d.stride, self.pad)
         if self.bn:
-            x = self.batchnorm(x)
+            #x = self.batchnorm(x)
+            exponential_average_factor = 0.0
+            if self.batchnorm.training and self.batchnorm.track_running_stats:
+                exponential_average_factor = self.batchnorm.momentum
+
+            x = F.batch_norm(x, self.batchnorm.running_mean[:self.out_channels],
+                             self.batchnorm.running_var[:self.out_channels],
+                             self.batchnorm.weight[:self.out_channels],
+                             self.batchnorm.bias[:self.out_channels],
+                             self.batchnorm.training or not self.batchnorm.track_running_stats,
+                             self.batchnorm.momentum,
+                             self.batchnorm.eps)
+
             x /= 4.
         x = self.activation(x)
         x = self.clamp(x)
@@ -88,6 +105,12 @@ class Unit(nn.Module):
                                                self.bias_list[i],
                                                self.bn,
                                                self.verbose))
+    
+    def set_batchnorm_on(self):
+        self.bn = True
+        for layer in self.layers:
+            layer.set_batchnorm_on()
+    
     def forward(self, x):
         for i in range(self.depth):
             x = self.layers[i](x)
@@ -191,7 +214,7 @@ class MOFA_Net_Arch():
     
         return MOFA_Net_Arch(param_dict)
 
-    def mutate(self, prob_mutation):
+    def mutate(self, prob_mutation, mutate_kernel=True, mutate_depth=True, mutate_width=True):
         param_dict = copy.deepcopy(self.get_param_dict())
 
         depth_list = param_dict['depth_list']
@@ -200,26 +223,59 @@ class MOFA_Net_Arch():
         bias_list = param_dict['bias_list']
 
         #mutate model depth
-        for unit_idx in range(param_dict['n_units']):
-            if random.random() < prob_mutation:
-                depth = random.choice([1, 2, 3])
-                if depth <= depth_list[unit_idx]:
-                    width_list[unit_idx] = width_list[unit_idx][:depth]
-                    kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
-                    bias_list[unit_idx] = bias_list[unit_idx][:depth]
-                else:
-                    for _ in range(depth - depth_list[unit_idx]):
-                        kernel_list[unit_idx].append(random.choice([1, 3]))
-                        width_list[unit_idx].append(random.choice([16, 32, 64, 128, 256]))
-                        bias_list[unit_idx].append(True)
-                depth_list[unit_idx] = depth
+        if mutate_depth:
+            for unit_idx in range(param_dict['n_units']):
+                if random.random() < prob_mutation:
+                    if unit_idx == 0:
+                        min_depth = 2
+                        max_depth = 4
+                    elif unit_idx == (param_dict['n_units'] - 1):
+                        min_depth = 1
+                        max_depth = 2
+                    else:
+                        min_depth = 1
+                        max_depth = 3
+                    #depth = random.choice([1, 2, 3])
+                    depth = random.randint(min_depth, max_depth)
+                    if depth <= depth_list[unit_idx]:
+                        width_list[unit_idx] = width_list[unit_idx][:depth]
+                        kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
+                        bias_list[unit_idx] = bias_list[unit_idx][:depth]
+                    else:
+                        for _ in range(depth - depth_list[unit_idx]):
+                            kernel_list[unit_idx].append(random.choice([1, 3]))
+                            if (unit_idx == 0) or ( (unit_idx == 1) and len(width_list[unit_idx]) < 3):
+                                width_opts = [32, 48, 64]
+                            else:
+                                width_opts = [64, 96, 128]
+                            
+                            if mutate_width:
+                                width_list[unit_idx].append(random.choice(width_opts))
+                            else:
+                                width_list[unit_idx].append(width_opts[-1])
+                            bias_list[unit_idx].append(True)
+                    depth_list[unit_idx] = depth
+            width_list[-1][-1] = 128
 
         #mutate layer parameters
         for unit_idx in range(len(width_list)):
             for layer_idx in range(len(width_list[unit_idx])):
                 if random.random() < prob_mutation:
-                    kernel_list[unit_idx][layer_idx] = random.choice([1, 3])
-                    width_list[unit_idx][layer_idx] = random.choice([16, 32, 64, 128, 256])
+                    if mutate_kernel:
+                        kernel_list[unit_idx][layer_idx] = random.choice([1, 3])
+                    
+                    #width_list[unit_idx][layer_idx] = random.choice([16, 32, 64, 128, 256])
+                    if (unit_idx == 0) or ( (unit_idx == 1) and layer_idx < 2):
+                        width_opts = [32, 48, 64]
+                    else:
+                        width_opts = [64, 96, 128]
+                    
+                    if mutate_width:
+                        width_list[unit_idx][layer_idx] = random.choice(width_opts)
+                    else:
+                        width_list[unit_idx][layer_idx] = width_opts[-1]
+
+        width_list[-1][-1] = 128
 
         return MOFA_Net_Arch(param_dict)
 
@@ -298,7 +354,12 @@ class MOFAnet(nn.Module):
             self.last_width = self.width_list[i][-1]
         self.max_pool = nn.MaxPool2d(kernel_size=2)
 
-        self.classifier = nn.Linear(512, self.out_class) 
+        self.classifier = nn.Linear(512, self.out_class)
+
+    def set_batchnorm_on(self):
+        self.bn = True
+        for unit in self.units:
+            unit.set_batchnorm_on()
     
     def update_arch(self, param_dict):
         self.in_ch = param_dict['in_ch']
@@ -349,6 +410,11 @@ class MOFAnet(nn.Module):
                 _, inds = torch.sort(importance, descending=True)
                 layer.conv2d.weight.data = layer.conv2d.weight.data[inds, :, :, :]
                 layer.conv2d.bias.data = layer.conv2d.bias.data[inds]
+                if layer.bn:
+                    layer.batchnorm.weight.data = layer.batchnorm.weight.data[inds]
+                    layer.batchnorm.bias.data = layer.batchnorm.bias.data[inds]
+                    layer.batchnorm.running_mean.data = layer.batchnorm.running_mean.data[inds]
+                    layer.batchnorm.running_var.data = layer.batchnorm.running_var.data[inds]
                 
                 next_layer_idx = layer_idx + 1
                 next_unit_idx = unit_idx
